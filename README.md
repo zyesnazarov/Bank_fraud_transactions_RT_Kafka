@@ -61,7 +61,7 @@ Code: [`fraud-transactions-databricks.py`](./fraud-transactions-databricks.py)
 - Identified **high-risk fraudulent transactions** using a combination of **rules-based detection & statistical models**.
 - Improved **response time for fraud alerts**, reducing financial losses for banks.
 
-## **Future Enhancements**
+## **Future Enhancements** (Will be added soon)
 - Implement **ML-based fraud detection models** (e.g., Isolation Forest, Autoencoders).
 - Enhance Kafka consumers for **faster processing & alerting mechanisms**.
 - Integrate with **real-time dashboards** (e.g., Power BI, Grafana) for visualization.
