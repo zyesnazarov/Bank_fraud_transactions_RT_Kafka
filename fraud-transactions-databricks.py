@@ -9,7 +9,7 @@ spark = SparkSession.builder \
     .appName("FraudDetectionPipeline") \
     .config("spark.jars.packages", "com.microsoft.azure:spark-mssql-connector_2.12:1.2.0") \
     .getOrCreate()
-spark.conf.set("fs.azure.account.key.storagezyesnazarov.dfs.core.windows.net", "TBD")
+spark.conf.set("fs.azure.account.key.storagezyesnazarov.dfs.core.windows.net", "<STORAGE_ACCOUNT_KEY>")
 
 
 # COMMAND ----------
