@@ -34,4 +34,4 @@ while True:
     producer.send('bank-transactions', transaction)
     print(f"Sent: {transaction}")
 
-    time.sleep(2) 
+    time.sleep(3) 
