@@ -1,0 +1,89 @@
+import logging
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, when, hour, round, count, avg, expr
+from pyspark.sql.types import BooleanType
+import pyspark.sql.functions as F
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def create_spark_session():
+    logger.info("Creating Spark session...")
+    spark = SparkSession.builder \
+        .appName("FraudDetectionWithFuzzy") \
+        .getOrCreate()
+    logger.info("Spark session created.")
+    return spark 
+
+def read_kafka_stream(spark):
+    logger.info("Reading from Kafka stream...")
+    return spark.readStream.format("kafka") \ 
+        .option("kafka.bootstrap.servers", "3.95.137.41:9092") \
+        .option("subscribe", "bank-transactions") \
+        .option("startingOffsets", "latest") \
+        .load()
+
+def parse_stream(df):
+    logger.info("Parsing JSON stream into structured columns...")
+    return df.selectExpr("CAST(value AS STRING) as json_data") \
+        .selectExpr("from_json(json_data, 'transaction_id STRING, account_no INT, transaction_timestamp STRING, amount DOUBLE, balance_amt DOUBLE, bank_id INT, customer_name STRING, country_code STRING') as data") \
+        .select("data.*")
+
+def enrich_data(df):
+    logger.info("Enriching data with fraud logic...")
+    df = df.withColumn("transaction_timestamp", col("transaction_timestamp").cast("timestamp"))
+    df = df.withColumn("fraud_large_withdrawal", when(col("amount") > 10000, 1).otherwise(0))
+    df = df.withColumn("fraud_low_balance", when((col("amount") < 0) & (col("balance_amt") < 100), 1).otherwise(0))
+    df = df.withColumn("amount_balance_ratio", round((col("amount") / col("balance_amt")), 3))
+    df = df.withColumn("night_withdrawal", when((col("amount") < 0) & (hour(col("transaction_timestamp")).between(0, 5)), 1).otherwise(0))
+    return df
+
+def flag_embargo_transactions(df, embargo_df):
+    logger.info("Flagging embargo violations...")
+    df = df.join(embargo_df, on="country_code", how="left")
+    df = df.withColumn("is_embargo_violation", when(col("embargoed") == True, 1).otherwise(0))
+    df = df.withColumn("suspicious_amount", when((col("amount") > 10000) & (col("is_embargo_violation") == 1), 1).otherwise(0))
+    return df
+
+def apply_fuzzy_name_match(df, watchlist_df):
+    logger.info("Applying fuzzy name matching...")
+    from pyspark.sql.functions import levenshtein
+    df = df.crossJoin(watchlist_df)
+    df = df.withColumn("name_match", levenshtein(col("customer_name"), col("watchlist_name")) < 3)
+    df = df.withColumn("watchlist_flag", when(col("name_match"), 1).otherwise(0))
+    return df
+
+def calculate_fraud_score(df):
+    logger.info("Calculating fraud score...")
+    df = df.withColumn("fraud_score", sum([col(x) for x in [
+        "fraud_large_withdrawal", "fraud_low_balance", "night_withdrawal", 
+        "is_embargo_violation", "suspicious_amount", "watchlist_flag"]]))
+    return df
+
+def write_to_delta(df):
+    logger.info("Writing stream to Delta Lake...")
+    return df.writeStream \
+        .format("delta") \
+        .option("path", "abfss://fraud-transactions-project@storagezyesnazarov.dfs.core.windows.net/delta/enhanced/") \
+        .option("checkpointLocation", "abfss://fraud-transactions-project@storagezyesnazarov.dfs.core.windows.net/checkpoints-enhanced/") \
+        .outputMode("append") \
+        .start()
+
+def main():
+    spark = create_spark_session()
+
+    # Static data
+    embargo_df = spark.read.format("csv").option("header", True).load("/path/to/embargo_list.csv")
+    watchlist_df = spark.read.format("csv").option("header", True).load("/path/to/watchlist.csv")
+
+    kafka_df = read_kafka_stream(spark)
+    parsed_df = parse_stream(kafka_df)
+    enriched_df = enrich_data(parsed_df)
+    flagged_df = flag_embargo_transactions(enriched_df, embargo_df)
+    fuzzy_df = apply_fuzzy_name_match(flagged_df, watchlist_df)
+    scored_df = calculate_fraud_score(fuzzy_df)
+
+    query = write_to_delta(scored_df)
+    logger.info("Streaming query started. Awaiting termination...")
+    query.awaitTermination()
